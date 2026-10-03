@@ -33,15 +33,15 @@ enable_language(C ASM)
 
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME}
-        Core/Inc/key.h
-        Core/Src/key.c
-        Core/Inc/mode.h
-        Core/Src/angle_sensor.c
-        Core/Inc/angle_sensor.h
-        Core/Inc/serial.h
-        Core/Src/serial.c
-        Core/Inc/pid.h
-        Core/Src/pid.c)
+        BSP/key.h
+        BSP/key.c
+        App/mode.h
+        App/angle_sensor.c
+        App/angle_sensor.h
+        Composite/serial.h
+        Composite/serial.c
+        Middleware/pid.h
+        Middleware/pid.c)
 
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
@@ -54,15 +54,19 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
-    Core/Src/oled.c
-    Core/Src/oledfont.c
-    Core/Src/motor.c
-    Core/Src/mode.c
+    BSP/oled.c
+    BSP/oledfont.c
+    BSP/motor.c
+    App/mode.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    App
+    Composite
+    Middleware
+    BSP
 )
 
 # Add project symbols (macros)
