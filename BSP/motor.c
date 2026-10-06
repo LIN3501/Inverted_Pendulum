@@ -175,7 +175,9 @@ void Encoder_Update(Encoder_HandleTypeDef *hencoder)
     uint32_t current_time = HAL_GetTick();
     uint32_t delta_time = current_time - hencoder->last_time;
 
-    if (delta_time > 0) {
+    /* 测速窗口 ≥50ms：Δcount 是整数，10ms 窗口格点只有 0.1cnt/ms，
+     * 近零速在 0/±0.1 间跳变会抖出速度环设定台阶；50ms 窗口格点降到 0.02cnt/ms */
+    if (delta_time >= 50) {
         /* 获取当前计数值 */
         hencoder->count = Encoder_GetCount(hencoder);
 
