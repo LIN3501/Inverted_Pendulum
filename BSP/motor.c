@@ -34,8 +34,8 @@ void Motor_SetSpeed(Motor_HandleTypeDef *hmotor, int16_t speed)
 {
     uint16_t pwm_value;
 
-    if (speed > 1000) speed = 1000;
-    if (speed < -1000) speed = -1000;
+    if (speed > 10000) speed = 10000;
+    if (speed < -10000) speed = -10000;
 
     hmotor->speed = speed;
 
@@ -48,7 +48,7 @@ void Motor_SetSpeed(Motor_HandleTypeDef *hmotor, int16_t speed)
         return;
     }
 
-    /* 计算PWM值（假设定时器周期为1000） */
+    /* 计算PWM值（定时器满幅 10000：72MHz 不分频 ÷10000 = 7.2kHz PWM） */
     pwm_value = (uint16_t)(abs(speed));
 
     /* 设置PWM占空比 */
@@ -175,17 +175,18 @@ void Encoder_Update(Encoder_HandleTypeDef *hencoder)
     uint32_t current_time = HAL_GetTick();
     uint32_t delta_time = current_time - hencoder->last_time;
 
-    /* 测速窗口 ≥50ms：Δcount 是整数，10ms 窗口格点只有 0.1cnt/ms，
-     * 近零速在 0/±0.1 间跳变会抖出速度环设定台阶；50ms 窗口格点降到 0.02cnt/ms */
-    if (delta_time >= 50) {
+    /* 测速窗口 10ms：Δcount 是整数，格点 0.1cnt/ms，近零速在 0/±0.1 间跳变；
+     * 一阶低通（新值占 0.2，等效时间常数约 40ms）把量化台阶滤平，速度环 Kp 才敢加大 */
+    if (delta_time >= 10) {
         /* 获取当前计数值 */
         hencoder->count = Encoder_GetCount(hencoder);
 
         /* 计算脉冲变化量 */
         int32_t delta_count = hencoder->count - hencoder->last_count;
 
-        /* 计算速度（脉冲/秒） */
-        hencoder->speed = (float)delta_count / (float)delta_time;
+        /* 低通速度 = 0.8*旧值 + 0.2*新值（M 法，cnt/ms） */
+        hencoder->speed = 0.8f * hencoder->speed
+                        + 0.2f * ((float)delta_count / (float)delta_time);
 
         /* 更新上次计数值和时间 */
         hencoder->last_count = hencoder->count;

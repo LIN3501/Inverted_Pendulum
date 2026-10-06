@@ -37,7 +37,7 @@ typedef struct {
     TIM_HandleTypeDef *htim;    // PWM定时器句柄
     uint32_t channel;           // PWM通道
     MotorID id;                 // 电机ID
-    int16_t speed;              // 当前速度 (-1000 ~ 1000)
+    int16_t speed;              // 当前速度 (-10000 ~ 10000)
 } Motor_HandleTypeDef;
 
 void Motor_Init(Motor_HandleTypeDef *hmotor, TIM_HandleTypeDef *htim, uint32_t channel, MotorID id);

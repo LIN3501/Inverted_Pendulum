@@ -154,15 +154,18 @@ void Mode_2(void)
 /* 直立环 PID：PID_DEFINE 的第二个参数就是蓝牙调参命令里的 <环名>；
  * 默认参数写在静态初值里，PIDController_Init 只清状态不清增益，
  * 所以重新进模式 3 不会把蓝牙调好的 Kp/Ki/Kd 冲回默认值 */
+/* PWM 满幅 1000 → 10000（TIM1 Prescaler=0、Period=9999，7.2kHz），
+ * 输出侧增益/限幅同步 ×10，每单位占空比与旧刻度一致：
+ * Kp 40→400，Kd 120→1200，积分限幅 250→2500；SET:Balance:... 在线调参也都是新刻度 */
 PID_DEFINE(pid_balance, "Balance",
-    .Kp        = 40.0f,    /* 每 1° 误差输出 200（20% PWM） */
-    .Ki        = 0.5f,      /* 积分增益：实测 Ki=1.0 会以 2.5s 周期泵出慢摆，0.5 观察 */
-    .Kd        = 100.0f,     /* 每 1°/周期变化输出 10 */
+    .Kp        = 400.0f,    /* 每 1° 误差输出 400（4% PWM） */
+    .Ki        = 0.0f,      /* 直立环不带积分——实测会以 2.5s 周期泵出慢摆，积分职责已移到速度环 */
+    .Kd        = 1000.0f,   /* 每 1°/拍 角度变化输出 1200（12% PWM） */
     .alpha     = 0.8f,      /* 微分低通 0.8 */
-    .limMin    = -1000,
-    .limMax    =  1000,
-    .limMinInt = -250.0f,
-    .limMaxInt =  250.0f);
+    .limMin    = -10000,
+    .limMax    =  10000,
+    .limMinInt = -2500.0f,
+    .limMaxInt =  2500.0f);
 
 /* 速度外环（级联在直立环外）：目标速度 0，输出（单位 °）作为直立环的角度设定偏移，
  * 限幅 ±5°。
@@ -170,17 +173,16 @@ PID_DEFINE(pid_balance, "Balance",
  * 方向反了直接发 SET:Velocity:KP:-<值> 在线取负，不用改代码。
  * 初始值 1.0 = 速度 1(count/ms) 对应 1° 设定偏移，按 VOFA 波形 ×2 步进调 */
 PID_DEFINE(pid_velocity, "Velocity",
-    .Kp        = 5.0f,      /* 10ms 差分速度一格 0.1cnt/ms，Kp 每格只偏 0.1°，避免 0.5° 台阶抖出 6~8Hz 快震 */
-    .Ki        = 0.0f,      /* 先纯 P；要 PI 直接 SET:Velocity:KI: 在线加 */
+    .Kp        = 12.0f,      /* 阻尼项：10ms 窗已加 0.8/0.2 低通滤平台阶，Kp 按 ×2 步进加大（5→10→20），目标 Kp:Ki≈100~200:1；出现快震回退一档 */
+    .Ki        = 0.08f,     /* 弹簧项：积分=∫速度=摆臂位置反馈，把摆臂拉回原位；过低压不住慢摆（会跑到 360° 大摆），过高只抬摆动频率不助衰减 */
     .Kd        = 0.0f,
     .alpha     = 0.8f,
-    .limMin    = -5,
-    .limMax    =  5,
-    .limMinInt = -1.0f,
-    .limMaxInt =  1.0f);
+    .limMin    = -8,
+    .limMax    =  8,
+    .limMinInt = -8.0f,
+    .limMaxInt =  8.0f);
 static uint32_t mode3_last_tick = 0;
 static uint8_t  mode3_tx_div = 0;
-static uint16_t mode3_still_cnt = 0;   /* 直立误差 |0-angle| 连续低于 0.2° 的拍数，满 100 拍冻结积分 */
 
 /* KEY0 退出时立刻停电机；VOFA+ 每 50ms 一帧：
  * ch0 = 0水平参考(恒0)，ch1 = PID 输出，ch2 = 直立环积分，ch3 = 误差(0-角度)，ch4 = 速度环角度设定，ch5 = 速度环积分 */
@@ -190,7 +192,6 @@ void Mode_3(void)
     {
         PIDController_Init(&pid_balance);
         PIDController_Init(&pid_velocity);
-        mode3_still_cnt = 0;
         /* 微分作用于测量值，预置当前角度，避免第一拍微分满幅尖峰 */
         pid_balance.prevMeasurement = Angle_Tick();
         Motor_Enable();
@@ -218,23 +219,9 @@ void Mode_3(void)
         /* 速度外环：摆臂速度 -> 角度设定偏移（°），把速度压到 0 防止单方向漂移 */
         Encoder_Update(&hencoder);
         float speed = Encoder_GetSpeed(&hencoder);
-        float angle_sp = PIDController_Position(&pid_velocity, 0.0f, speed) + 0.6f;
+        float angle_sp = PIDController_Position(&pid_velocity, 0.0f, speed);
 
-        /* 积分冻结：误差(0-角度)连续 100 拍(1s)都 <0.2° 就停止累加（保持当前值），
-         * 防止摆臂被静摩擦卡住时积分 windup 顶破静摩擦造成慢速 stick-slip；
-         * 任一拍误差 ≥0.2° 计数清零，积分自动恢复累加 */
-        if (angle < 1.2f && angle > -1.2f)
-        {
-            if (mode3_still_cnt < 20) mode3_still_cnt++;
-        }
-        else
-        {
-            mode3_still_cnt = 0;
-        }
-
-        float integrator_before = pid_balance.integrator;      /* 冻结用：调用前先存积分值 */
         int16_t out = (int16_t)PIDController_Position(&pid_balance, angle_sp, angle);
-        if (mode3_still_cnt >= 20) pid_balance.integrator = integrator_before;
 
         /* 过冲保护：偏离竖直超过 45° -> 立刻停电机退出模式3 */
         if (angle >= 45.0f || angle <= -45.0f)
@@ -244,9 +231,9 @@ void Mode_3(void)
             return;
         }
 
-        /* 死区补偿：输出非零就先越过电机启动阈值，过零段不再"断油"；总输出仍钳回限幅 */
-        // if (out > 0)      out += 40;
-        // else if (out < 0) out -= 40;
+        /* 死区补偿：输出非零就先越过电机启动阈值，过零段不再"断油"；总输出仍钳回限幅（满幅 10000 刻度） */
+        // if (out > 0)      out += 400;
+        // else if (out < 0) out -= 400;
         if (out > (int16_t)pid_balance.limMax)       out = (int16_t)pid_balance.limMax;
         else if (out < (int16_t)pid_balance.limMin)  out = (int16_t)pid_balance.limMin;
 
@@ -256,17 +243,17 @@ void Mode_3(void)
         {
             mode3_tx_div = 0;
             /* ch0=0水平参考 ch1=PID输出 ch2=直立环积分 ch3=误差(0-角度) ch4=速度环角度设定 ch5=速度环积分，均为最近一拍的值 */
-            Serial_SendFireWater(0.0f, (float)out, integrator_before, 0.0f - angle, angle_sp, pid_velocity.integrator);
+            Serial_SendFireWater(0.0f, (float)out, pid_balance.integrator, 0.0f - angle, angle_sp, pid_velocity.integrator);
         }
     }
 }
 
 /* ===== 模式 4：电位器开环控电机 =====
- * 旋转 PA6 电位器直接给电机 PWM，范围 -150~150（映射 0~4095，约 ±15% 占空比）；
+ * 旋转 PA6 电位器直接给电机 PWM，范围 -1500~1500（映射 0~4095，约 ±15% 占空比）；
  * OLED 第二行显示当前下发值；KEY0 回模式选择，退出时立刻停电机 */
 void Mode_4(void)
 {
-    static int last_pwm = 0x7FFF;   /* 上次下发的 PWM，哨兵值（超出 -150~150）逼首拍执行 */
+    static int last_pwm = 0x7FFF;   /* 上次下发的 PWM，哨兵值（超出 -1500~1500）逼首拍执行 */
 
     if (screen_mode != mode)                /* 刚进模式：使能驱动芯片（STBY），画静态文字 */
     {
@@ -283,14 +270,14 @@ void Mode_4(void)
         return;
     }
 
-    int pwm = Potentiometer_Read(-150, 150);
+    int pwm = Potentiometer_Read(-1500, 1500);
 
     if (pwm != last_pwm)                    /* 值变了才下发+刷屏，OLED 刷一次约 6ms */
     {
         last_pwm = pwm;
         Motor_SetSpeed(&hmotor, pwm);
 
-        sprintf(message, "%4d", pwm);
+        sprintf(message, "%5d", pwm);
         OLED_ShowString(40, 2, (uint8_t *)message, 16);
     }
 }
