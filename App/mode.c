@@ -32,8 +32,8 @@ static int menu_row = -1;       /* 光标所在行 0~3，-1 = 需要整页重画
 static const char *mode_names[4] = {
     "Mode1:Angle Cal",
     "Mode2:VOFA Tx",
-    "Mode3:Balance",
-    "Mode4:Open Loop",
+    "Mode3:Open Loop",
+    "Mode4:Balance",
 };
 static uint32_t mode1_last_tick = 0;    /* 模式 1 上次刷新的时刻，单位 ms */
 static uint32_t mode2_last_tick = 0;    /* 模式 2 上次发串口的时刻，单位 ms */
@@ -147,13 +147,47 @@ void Mode_2(void)
     }
 }
 
-/* ===== 模式 3：直立环（角度 PID，100Hz）=====
+/* ===== 模式 3：电位器开环控电机 =====
+ * 旋转 PA6 电位器直接给电机 PWM，范围 -150~150（映射 0~4095，约 ±15% 占空比）；
+ * OLED 第二行显示当前下发值；KEY0 回模式选择，退出时立刻停电机 */
+void Mode_3(void)
+{
+    static int last_pwm = 0x7FFF;   /* 上次下发的 PWM，哨兵值（超出 -1500~1500）逼首拍执行 */
+
+    if (screen_mode != mode)                /* 刚进模式：使能驱动芯片（STBY），画静态文字 */
+    {
+        Motor_Enable();
+        last_pwm = 0x7FFF;
+        OLED_ShowString(0, 2, (uint8_t *)"PWM:", 16);
+    }
+
+    Mode_Page("Mode 3");
+
+    if (mode != 3)                          /* KEY0 退出：立刻停电机 */
+    {
+        Motor_Stop(&hmotor);
+        return;
+    }
+
+    int pwm = Potentiometer_Read(-1500, 1500);
+
+    if (pwm != last_pwm)                    /* 值变了才下发+刷屏，OLED 刷一次约 6ms */
+    {
+        last_pwm = pwm;
+        Motor_SetSpeed(&hmotor, pwm);
+
+        sprintf(message, "%5d", pwm);
+        OLED_ShowString(40, 2, (uint8_t *)message, 16);
+    }
+}
+
+/* ===== 模式 4：直立环（角度 PID，100Hz）=====
  * 调 PID 可以直接改下面的 Kp/Ki/Kd，也可以运行时用串口发 SET:Balance:KP:xxx 在线调；
  * 电机方向反了（越调越远）就在 out 前面加负号；
  * 摆杆竖直时角度不是 0 就把 setpoint 改成 Mode 1 里读到的角度(×100) */
 /* 直立环 PID：PID_DEFINE 的第二个参数就是蓝牙调参命令里的 <环名>；
  * 默认参数写在静态初值里，PIDController_Init 只清状态不清增益，
- * 所以重新进模式 3 不会把蓝牙调好的 Kp/Ki/Kd 冲回默认值 */
+ * 所以重新进模式 4 不会把蓝牙调好的 Kp/Ki/Kd 冲回默认值 */
 /* PWM 满幅 1000 → 10000（TIM1 Prescaler=0、Period=9999，7.2kHz），
  * 输出侧增益/限幅同步 ×10，每单位占空比与旧刻度一致：
  * Kp 40→400，Kd 120→1200，积分限幅 250→2500；SET:Balance:... 在线调参也都是新刻度 */
@@ -181,12 +215,16 @@ PID_DEFINE(pid_velocity, "Velocity",
     .limMax    =  8,
     .limMinInt = -8.0f,
     .limMaxInt =  8.0f);
-static uint32_t mode3_last_tick = 0;
-static uint8_t  mode3_tx_div = 0;
+/* TIM3 中断里算完的最近一拍快照，供主循环 50ms 遥测帧读取（volatile：ISR 写、主循环读） */
+static volatile float mode4_out      = 0.0f;   /* PID 输出 */
+static volatile float mode4_angle    = 0.0f;   /* 角度（°），遥测 ch3 = 0 - 它 */
+static volatile float mode4_angle_sp = 0.0f;   /* 速度环给出的角度设定（°） */
+static uint32_t mode4_last_tick = 0;           /* 主循环上次发遥测的时刻（ms） */
 
-/* KEY0 退出时立刻停电机；VOFA+ 每 50ms 一帧：
+/* PID 计算在 TIM3 中断（100Hz）里跑，这里只管：初始化、KEY0 退出、50ms 遥测。
+ * VOFA+ 每 50ms 一帧：
  * ch0 = 0水平参考(恒0)，ch1 = PID 输出，ch2 = 直立环积分，ch3 = 误差(0-角度)，ch4 = 速度环角度设定，ch5 = 速度环积分 */
-void Mode_3(void)
+void Mode_4(void)
 {
     if (screen_mode != mode)                /* 刚进模式：初始化 PID、使能电机 */
     {
@@ -195,71 +233,10 @@ void Mode_3(void)
         /* 微分作用于测量值，预置当前角度，避免第一拍微分满幅尖峰 */
         pid_balance.prevMeasurement = Angle_Tick();
         Motor_Enable();
-        mode3_last_tick = HAL_GetTick();
-        mode3_tx_div = 0;
+        mode4_last_tick = HAL_GetTick();
 
         OLED_ShowString(0, 2, (uint8_t *)"Balance PID", 16);
         OLED_ShowString(0, 4, (uint8_t *)"KEY0 = Exit", 16);
-    }
-
-    Mode_Page("Mode 3");
-
-    if (mode != 3)                          /* KEY0 退出：立刻停电机 */
-    {
-        Motor_Stop(&hmotor);
-        return;
-    }
-
-    if (HAL_GetTick() - mode3_last_tick >= 10)      /* 10ms = 100Hz */
-    {
-        mode3_last_tick = HAL_GetTick();
-
-        float angle = Angle_Tick();                             /* 单位 ° */
-
-        /* 速度外环：摆臂速度 -> 角度设定偏移（°），把速度压到 0 防止单方向漂移 */
-        Encoder_Update(&hencoder);
-        float speed = Encoder_GetSpeed(&hencoder);
-        float angle_sp = PIDController_Position(&pid_velocity, 0.0f, speed);
-
-        int16_t out = (int16_t)PIDController_Position(&pid_balance, angle_sp, angle);
-
-        /* 过冲保护：偏离竖直超过 45° -> 立刻停电机退出模式3 */
-        if (angle >= 45.0f || angle <= -45.0f)
-        {
-            Motor_Stop(&hmotor);
-            mode = MODE_SELECT;                 /* 回模式选择，主循环会清屏 */
-            return;
-        }
-
-        /* 死区补偿：输出非零就先越过电机启动阈值，过零段不再"断油"；总输出仍钳回限幅（满幅 10000 刻度） */
-        // if (out > 0)      out += 400;
-        // else if (out < 0) out -= 400;
-        if (out > (int16_t)pid_balance.limMax)       out = (int16_t)pid_balance.limMax;
-        else if (out < (int16_t)pid_balance.limMin)  out = (int16_t)pid_balance.limMin;
-
-        Motor_SetSpeed(&hmotor, out);
-
-        if (++mode3_tx_div >= 5)            /* 每 50ms 发一帧，避免串口阻塞拖累控制周期 */
-        {
-            mode3_tx_div = 0;
-            /* ch0=0水平参考 ch1=PID输出 ch2=直立环积分 ch3=误差(0-角度) ch4=速度环角度设定 ch5=速度环积分，均为最近一拍的值 */
-            Serial_SendFireWater(0.0f, (float)out, pid_balance.integrator, 0.0f - angle, angle_sp, pid_velocity.integrator);
-        }
-    }
-}
-
-/* ===== 模式 4：电位器开环控电机 =====
- * 旋转 PA6 电位器直接给电机 PWM，范围 -1500~1500（映射 0~4095，约 ±15% 占空比）；
- * OLED 第二行显示当前下发值；KEY0 回模式选择，退出时立刻停电机 */
-void Mode_4(void)
-{
-    static int last_pwm = 0x7FFF;   /* 上次下发的 PWM，哨兵值（超出 -1500~1500）逼首拍执行 */
-
-    if (screen_mode != mode)                /* 刚进模式：使能驱动芯片（STBY），画静态文字 */
-    {
-        Motor_Enable();
-        last_pwm = 0x7FFF;
-        OLED_ShowString(0, 2, (uint8_t *)"PWM:", 16);
     }
 
     Mode_Page("Mode 4");
@@ -270,14 +247,57 @@ void Mode_4(void)
         return;
     }
 
-    int pwm = Potentiometer_Read(-1500, 1500);
-
-    if (pwm != last_pwm)                    /* 值变了才下发+刷屏，OLED 刷一次约 6ms */
+    if (HAL_GetTick() - mode4_last_tick >= 50)      /* 50ms 发一帧遥测（计算在 TIM3 中断里） */
     {
-        last_pwm = pwm;
-        Motor_SetSpeed(&hmotor, pwm);
-
-        sprintf(message, "%5d", pwm);
-        OLED_ShowString(40, 2, (uint8_t *)message, 16);
+        mode4_last_tick = HAL_GetTick();
+        /* ch0=0水平参考 ch1=PID输出 ch2=直立环积分 ch3=误差(0-角度) ch4=速度环角度设定 ch5=速度环积分，均为最近一拍中断里的快照 */
+        Serial_SendFireWater(0.0f, mode4_out, pid_balance.integrator, 0.0f - mode4_angle, mode4_angle_sp, pid_velocity.integrator);
     }
+}
+
+/* TIM3 更新中断 = 100Hz 固定控制周期（.ioc：Prescaler=71 → 1MHz，Counter Period 需=9999 才是 10ms）。
+ * 只做 PID + 电机输出，不做任何阻塞操作（OLED、串口发送必须留在主循环）。
+ * mode != 4 或 screen_mode != 4 都不动手：screen_mode 在 Mode_4 完成 PID Init、
+ * Motor_Enable 之后才被置 4，保证中断第一次执行时状态已就绪；
+ * KEY0 退出或 45° 过冲把 mode 改掉的那一瞬，中断立即停手 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance != TIM3)
+    {
+        return;
+    }
+
+    if (mode != 4 || screen_mode != 4)
+    {
+        return;
+    }
+
+    float angle = Angle_Tick();                             /* 单位 ° */
+
+    /* 速度外环：摆臂速度 -> 角度设定偏移（°），把速度压到 0 防止单方向漂移 */
+    Encoder_Update(&hencoder);
+    float speed = Encoder_GetSpeed(&hencoder);
+    float angle_sp = PIDController_Position(&pid_velocity, 0.0f, speed);
+
+    int16_t out = (int16_t)PIDController_Position(&pid_balance, angle_sp, angle);
+
+    /* 过冲保护：偏离竖直超过 45° -> 立刻停电机退出模式4 */
+    if (angle >= 45.0f || angle <= -45.0f)
+    {
+        Motor_Stop(&hmotor);
+        mode = MODE_SELECT;                 /* 回模式选择，主循环会清屏 */
+        return;
+    }
+
+    /* 死区补偿：输出非零就先越过电机启动阈值，过零段不再"断油"；总输出仍钳回限幅（满幅 10000 刻度） */
+    // if (out > 0)      out += 400;
+    // else if (out < 0) out -= 400;
+    if (out > (int16_t)pid_balance.limMax)       out = (int16_t)pid_balance.limMax;
+    else if (out < (int16_t)pid_balance.limMin)  out = (int16_t)pid_balance.limMin;
+
+    Motor_SetSpeed(&hmotor, out);
+
+    mode4_out      = (float)out;           /* 快照给主循环遥测帧 */
+    mode4_angle    = angle;
+    mode4_angle_sp = angle_sp;
 }

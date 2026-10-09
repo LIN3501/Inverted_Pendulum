@@ -49,8 +49,8 @@ extern int mode;
 void Mode_Select(void);         /* 模式 0：模式选择 */
 void Mode_1(void);              /* 模式 1 */
 void Mode_2(void);              /* 模式 2 */
-void Mode_3(void);              /* 模式 3 */
-void Mode_4(void);              /* 模式 4：电位器开环控电机 PWM，-150~150 */
+void Mode_3(void);              /* 模式 3：电位器开环控电机 PWM，-150~150 */
+void Mode_4(void);              /* 模式 4：直立环 */
 
 #ifdef __cplusplus
 }

@@ -118,6 +118,7 @@ int main(void)
 
   Potentiometer_Init(&hadc1);     /* 电位器接在 ADC1 上 */
   ADC_Start();                    /* 启动双通道 DMA 循环采集 */
+  HAL_TIM_Base_Start_IT(&htim3);  /* 启动 TIM3 更新中断，100Hz 控制环跑在 mode.c 的 HAL_TIM_PeriodElapsedCallback 里 */
   /* USER CODE END 2 */
 
   /* Infinite loop */
