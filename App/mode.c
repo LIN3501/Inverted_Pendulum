@@ -3,7 +3,7 @@
   * @file    mode.c
   * @brief   模式切换：mode 0 是模式选择，1/2/3 是各功能模式
   ******************************************************************************
-  * mode = 0        模式选择：4 行菜单 + 光标，电位器移光标，KEY0 进入，KEY1 翻页
+    * mode = 0        模式选择：菜单的绘制在 Composite/menu.c，这里只取选中结果
   * mode = 1 / 2 / 3  各功能模式，按 KEY0 回到模式选择
   ******************************************************************************
   */
@@ -15,8 +15,10 @@
 #include "angle_sensor.h"
 #include "serial.h"
 #include "motor.h"
+#include "menu.h"
 #include "pid.h"
 #include <stdio.h>
+#include <math.h>
 
 extern Motor_HandleTypeDef hmotor;   /* main.c 里定义，motor.h 只 extern 了 hencoder */
 
@@ -25,16 +27,6 @@ static char message[20];
 
 int mode = MODE_SELECT;         /* 当前模式，0 = 模式选择 */
 
-static int menu_page = 0;       /* 菜单当前页，0 起 */
-static int menu_row = -1;       /* 光标所在行 0~3，-1 = 需要整页重画 */
-
-/* 菜单每行显示的文字，第 0 列留给光标 '>'，所以每行最多 15 字符 */
-static const char *mode_names[4] = {
-    "Mode1:Angle Cal",
-    "Mode2:VOFA Tx",
-    "Mode3:Open Loop",
-    "Mode4:Balance",
-};
 static uint32_t mode1_last_tick = 0;    /* 模式 1 上次刷新的时刻，单位 ms */
 static uint32_t mode2_last_tick = 0;    /* 模式 2 上次发串口的时刻，单位 ms */
 
@@ -55,56 +47,19 @@ static void Mode_Page(const char *title)
         OLED_ShowString(0, 0, (uint8_t *)title, 16);
     }
 
-    if (Key_Press(MODE_KEY_ENTER))
-    {
-        mode = MODE_SELECT;
-    }
-}
-
-/* 模式 0：模式选择
- * 一页画 4 行菜单（y=0/2/4/6），第 0 列是光标 '>'：
- * 电位器（PA6）旋转上下移光标，KEY0 进入光标选中的模式，KEY1 切换下一页
- * 静态文字只在进菜单/翻页时整页重画，光标移动只画两个字符，
- * 避免整屏重刷（OLED 每字符约 6.4ms，整屏 ~180ms）卡主循环 */
-void Mode_Select(void)
-{
-    int row = Potentiometer_Read(0, 3);             /* 电位器 -> 本页行 0~3 */
-
-    if (screen_mode != MODE_SELECT)                 /* 刚进菜单：回第 1 页并整页重画 */
-    {
-        screen_mode = MODE_SELECT;
-        menu_page = 0;
-        menu_row = -1;
-    }
-
-    if (menu_row < 0)                               /* 进菜单或翻页后：整页画 4 行 + 光标 */
-    {
-        for (int i = 0; i < 4; i++)
+    if (Key_Press(MENU_KEY_ENTER))
         {
-            OLED_ShowString(0, i * 2, (uint8_t *)" ", 16);          /* 清光标列 */
-            OLED_ShowString(8, i * 2, (uint8_t *)mode_names[i], 16);
+            mode = MODE_SELECT;
         }
-        menu_row = row;
-        OLED_ShowString(0, menu_row * 2, (uint8_t *)">", 16);
-    }
-    else if (menu_row != row)                       /* 电位器动了才挪光标 */
-    {
-        OLED_ShowString(0, menu_row * 2, (uint8_t *)" ", 16);        /* 擦旧光标 */
-        OLED_ShowString(0, row * 2, (uint8_t *)">", 16);             /* 画新光标 */
-        menu_row = row;
     }
 
-    if (Key_Press(MODE_KEY_PAGE))                   /* KEY1：切下一页，页数不够时循环回本页 */
+    /* 模式 0：模式选择
+     * 菜单本体在 Composite/menu.c（分页 / 光标 / 菜单项文字都在那边），
+     * 这里只把它返回的模式号写回 mode，0 表示还停在菜单 */
+    void Mode_Select(void)
     {
-        menu_page = (menu_page + 1) % ((MODE_MAX + 3) / 4);
-        menu_row = -1;                              /* 逼下一轮整页重画 */
+        mode = Menu_Update(&screen_mode, mode);
     }
-
-    if (Key_Press(MODE_KEY_ENTER))                  /* KEY0：进入光标选中的模式 */
-    {
-        mode = menu_page * 4 + row + 1;
-    }
-}
 
 /* 模式 1：每 50ms 刷新一次
  * 第二行 = PA2 的 ADC 采样原始值，第三行 = Angle_Tick() 换算出的角度
@@ -255,11 +210,148 @@ void Mode_4(void)
     }
 }
 
+/* ===== 模式 5：自动起摆（发挥(1)）=====
+ * 两态状态机：SWING 甩摆 -> HOLD 直立环（Mode 4 同款），摔了回 SWING 重甩。
+ *
+ * SWING 两条规则：
+ *   1. 进模式头 S5_KICK_MS -> 朝正方向踹一脚，破"垂着不动 θ̇=0"的启动死区。
+ *      （只踹这一次：中途摔落重甩时摆杆还带着速度，规则自己能接上；
+ *      若真彻底停死，重进一次 Mode 5 即可）
+ *   2. 其余时间相位锁定泵能：out = S5_SIGN·S5_PWM·sign(θ̇·cosθ)。
+ *      推导：摆杆能量 dE/dt = ml·θ̇·cosθ·a_p，指令与 θ̇cosθ 同号则每拍都做正功，
+ *      摆幅单调涨到顶。自带锁相，不依赖共振周期估计。
+ *
+ * θ 从倒立量起（0°=倒立、±180°=下垂）。下垂点正是传感器 ±180° 缝，
+ * 求 θ̇ 前先把跨缝差值拉回 360° 内，否则每周期冒假尖峰把相位打反。
+ */
+#define S5_SIGN        (+1)     /* 泵能方向：VOFA 上摆幅越甩越小 -> 改 -1 */
+#define S5_PWM         3500     /* 甩摆/踹脚共用幅值（满幅 10000 刻度） */
+#define S5_KICK_MS     300      /* 进模式先踹一脚的时长 */
+#define S5_CATCH_DEG   20.0f    /* 捕获窗半宽：|摆角| 小于此且速度够慢就交给直立环 */
+#define S5_CATCH_VEL   200.0f   /* 捕获允许的最大摆速 °/s */
+#define S5_FALL_DEG    60.0f    /* HOLD 中偏离此角判摔，回 SWING 重甩 */
+
+enum { S5_SWING = 0, S5_HOLD = 1 };
+
+/* ISR 写、主循环读的快照（volatile） */
+static volatile struct {
+    uint8_t  state;
+    uint32_t t0;         /* 进模式时刻：踹脚计时 + 成绩计时起点 */
+    uint32_t first_ms;   /* 首次捕获用时 ms，0=还没成过 */
+    float    angle;      /* 摆角（°），0=倒立 */
+    float    vel;        /* 摆角速度（°/s），差分+低通后 */
+    float    out;        /* 电机输出（-10000~10000） */
+} s5 = { .state = S5_SWING };
+
+/* 单边私有状态：两边各用各的，不跨上下文（不需要 volatile） */
+static struct {
+    float    prev_raw;   /* 仅 ISR：上一拍摆角，求跨缝差值用 */
+    uint32_t last_tick;  /* 主循环：遥测节拍 */
+    uint32_t disp_tick;  /* 主循环：刷屏节拍 */
+} s5_priv;
+
+/* Mode 5 的 100Hz 控制节拍，从 HAL_TIM_PeriodElapsedCallback 里调 */
+static void Mode5_ControlISR(void)
+{
+    float angle = Angle_Tick();                     /* (−180,180]，0=倒立 */
+
+    float d = angle - s5_priv.prev_raw;             /* 跨 ±180° 缝时差值冒 ±360，拉回来 */
+    if (d > 180.0f)       d -= 360.0f;
+    else if (d < -180.0f) d += 360.0f;
+    s5_priv.prev_raw = angle;
+    s5.vel = 0.7f * s5.vel + 0.3f * (d / 0.01f);    /* 100Hz 差分 + 一阶低通；除以 0.01s 是单位换算：°/10ms -> °/s */
+
+    Encoder_Update(&hencoder);                      /* 每拍刷新，HOLD 才能直接取到新鲜速度 */
+
+    int16_t out;
+
+    if (s5.state == S5_SWING)
+    {
+        if      (HAL_GetTick() - s5.t0 < S5_KICK_MS)        out = S5_SIGN * S5_PWM;  /* 踹一脚起步 */
+        else if (s5.vel * cosf(angle * 0.0174533f) >= 0.0f) out =  S5_SIGN * S5_PWM; /* 泵能：与 θ̇cosθ 同号 */
+        else                                                out = -S5_SIGN * S5_PWM;
+
+        /* 捕获：贴顶且速度收敛 -> 交给直立环（Init 清状态不清增益，Mode4 调好的参数沿用） */
+        if (fabsf(angle) < S5_CATCH_DEG && fabsf(s5.vel) < S5_CATCH_VEL)
+        {
+            s5.state = S5_HOLD;
+            if (s5.first_ms == 0) s5.first_ms = HAL_GetTick() - s5.t0;   /* 成绩冻结 */
+            PIDController_Init(&pid_balance);
+            PIDController_Init(&pid_velocity);
+            pid_balance.prevMeasurement = angle;    /* 防微分首拍尖峰 */
+        }
+    }
+    else    /* S5_HOLD：与 Mode 4 完全同款的速度外环 + 直立环 */
+    {
+        float speed    = Encoder_GetSpeed(&hencoder);
+        float angle_sp = PIDController_Position(&pid_velocity, 0.0f, speed);
+        out = (int16_t)PIDController_Position(&pid_balance, angle_sp, angle);
+
+        if (fabsf(angle) > S5_FALL_DEG)             /* 摔了：回 SWING 重甩 */
+        {
+            s5.state = S5_SWING;
+            out = 0;
+        }
+    }
+
+    Motor_SetSpeed(&hmotor, out);                   /* 内部自带 ±10000 钳幅 */
+
+    s5.angle = angle;                               /* 快照给主循环遥测/显示 */
+    s5.out   = (float)out;
+}
+
+/* 模式 5 主循环侧：初始化、KEY0 退出、遥测与显示（控制全在 TIM3 中断里） */
+void Mode_5(void)
+{
+    if (screen_mode != mode)                /* 刚进模式：状态机复位，从甩摆开始 */
+    {
+        s5.state         = S5_SWING;
+        s5_priv.prev_raw = Angle_Tick();
+        s5.vel           = 0.0f;
+        s5.first_ms      = 0;
+        s5.t0            = HAL_GetTick();   /* 踹脚计时和成绩计时都从这里起 */
+        Motor_Enable();
+
+        OLED_ShowString(0, 2, (uint8_t *)"St:", 16);
+        OLED_ShowString(0, 4, (uint8_t *)"T=", 16);
+    }
+
+    Mode_Page("Mode 5");
+
+    if (mode != 5)                          /* KEY0 退出：立刻停电机 */
+    {
+        Motor_Stop(&hmotor);
+        return;
+    }
+
+    if (HAL_GetTick() - s5_priv.last_tick >= 50)      /* 50ms 一帧遥测 */
+    {
+        s5_priv.last_tick = HAL_GetTick();
+        /* ch0=摆角 ch1=角速度 ch2=0(占位) ch3=状态(0甩/1立) ch4=输出 ch5=起摆用时s */
+        Serial_SendFireWater(s5.angle, s5.vel, 0.0f, (float)s5.state, s5.out,
+                             s5.first_ms / 1000.0f);
+    }
+
+    if (HAL_GetTick() - s5_priv.disp_tick >= 100)     /* 100ms 刷一次显示 */
+    {
+        s5_priv.disp_tick = HAL_GetTick();
+
+        OLED_ShowString(24, 2, (uint8_t *)(s5.state == S5_HOLD ? "HOLD " : "SWING"), 16);
+
+        /* T = 首次捕获用时（成绩，冻结）；没成过就显示已进行时间 */
+        float t = (s5.first_ms > 0) ? (s5.first_ms / 1000.0f)
+                                    : (HAL_GetTick() - s5.t0) / 1000.0f;
+        sprintf(message, "%6.2f", t);
+        OLED_ShowString(16, 4, (uint8_t *)message, 16);
+    }
+}
+
 /* TIM3 更新中断 = 100Hz 固定控制周期（.ioc：Prescaler=71 → 1MHz，Counter Period 需=9999 才是 10ms）。
  * 只做 PID + 电机输出，不做任何阻塞操作（OLED、串口发送必须留在主循环）。
- * mode != 4 或 screen_mode != 4 都不动手：screen_mode 在 Mode_4 完成 PID Init、
- * Motor_Enable 之后才被置 4，保证中断第一次执行时状态已就绪；
- * KEY0 退出或 45° 过冲把 mode 改掉的那一瞬，中断立即停手 */
+ * mode 4/5 各走各的控制分支；mode != 4/5 或 screen_mode 还没跟上都不动手：
+ * screen_mode 在各模式完成初始化、Motor_Enable 之后才被置位，
+ * 保证中断第一次执行时状态已就绪；
+ * KEY0 退出或保护逻辑把 mode 改掉的那一瞬，中断立即停手 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance != TIM3)
@@ -267,8 +359,19 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         return;
     }
 
-    if (mode != 4 || screen_mode != 4)
+    if (mode != 4 && mode != 5)
     {
+        return;
+    }
+
+    if (screen_mode != mode)
+    {
+        return;
+    }
+
+    if (mode == 5)
+    {
+        Mode5_ControlISR();
         return;
     }
 

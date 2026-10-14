@@ -12,8 +12,9 @@ STM32F103C8T6 直流电机倒立摆（角度电位器方案 + 蓝牙/串口 PID 
 │   ├── mode.c/h         模式状态机（菜单 / 角度显示 / VOFA 波形 / 直立环 / 开环）
 │   └── angle_sensor.c/h 摆角传感器 ADC 原始值 → 角度标定换算
 ├── Composite/       # 复合层：跨层组合多个下层模块的"胶水"模块
-│   └── serial.c/h       串口/蓝牙调参（USART1 收发 + VOFA+ FireWater 协议
-│                        + SET:/GET: 命令桥接 PID 库）
+│   ├── serial.c/h       串口/蓝牙调参（USART1 收发 + VOFA+ FireWater 协议
+│   │                    + SET:/GET: 命令桥接 PID 库）
+│   └── menu.c/h         OLED 菜单（4 行分页 + 电位器光标 + KEY0/KEY1），条目表在这里
 ├── Middleware/      # 可复用算法库：不直接碰外设句柄
 │   └── pid.c/h          PID（位置式 + 增量式，含蓝牙调参命令解析）
 ├── BSP/             # 板级驱动层：每个模块绑定具体外设句柄

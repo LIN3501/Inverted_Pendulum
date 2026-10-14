@@ -140,6 +140,7 @@ int main(void)
       case 2:  Mode_2();             break;
       case 3:  Mode_3();             break;
       case 4:  Mode_4();             break;
+      case 5:  Mode_5();             break;
       default: mode = MODE_SELECT;   break;
     }
     /* USER CODE END WHILE */

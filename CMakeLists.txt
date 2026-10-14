@@ -40,6 +40,8 @@ add_executable(${CMAKE_PROJECT_NAME}
         App/angle_sensor.h
         Composite/serial.h
         Composite/serial.c
+        Composite/menu.h
+        Composite/menu.c
         Middleware/pid.h
         Middleware/pid.c)
 
