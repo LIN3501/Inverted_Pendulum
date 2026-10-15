@@ -79,6 +79,6 @@
 ## 现有函数库（铁律 2 复用清单；头文件是唯一真源，动手前重读）
 
 - **motor.h**：`Motor_Init`、`Motor_SetSpeed(hmotor, speed)`（-1000~1000，自动方向）、`Motor_SetDirection`、`Motor_Stop`、`Motor_Enable/Disable`；类型 `MotorID`（MOTOR_A 左 / MOTOR_B 右）、`MotorDirection`
-- **key.h**：`Key_Press(key)`（0/1/2，50ms 消抖）、`TIM_Task_Check(task, period)`（**周期任务用这个**）、`TIM_Task_GetElapsed`、`TIM_Task_Create`（内部 malloc，**新代码不用**）、`Potentiometer_Init(hadc)`、`Potentiometer_Read(min, max)`；全局 `volatile int time_tick`（1ms）、`int key_0/1/2`
+- **key.h**：`Key_Press(key_id)`（0/1/2，50ms 消抖）、`TIM_Task_Check(task, period)`（**周期任务用这个**）、`TIM_Task_GetElapsed`、`TIM_Task_Create`（内部 malloc，**新代码不用**）、`Potentiometer_Init(hadc)`、`Potentiometer_Read(min, max)`；全局 `volatile int time_tick`（1ms）、`int key_0_pending/1_pending/2_pending`
 - **oled.h**：`OLED_Init/Clear`、`OLED_ShowString(x, y, str, size)`（size 一般 16）、`OLED_ShowChar`、`OLED_ShowNum(x, y, num, len, size)`、`OLED_Set_Pos`、`OLED_Display_On/Off`、`OLED_On`；`WriteCmd` 是遗留声明**不用**
 - **可直接调用的 HAL（不算新增）**：`HAL_GetTick`、`HAL_GPIO_WritePin/ReadPin`、`HAL_TIM_PWM_Start/Stop`、`__HAL_TIM_SET_COMPARE`、`HAL_ADC_GetValue`、`HAL_I2C_Master_Transmit` 等

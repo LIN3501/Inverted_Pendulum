@@ -1,3 +1,7 @@
 build
 mx.scratch
 !.settings
+.idea/
+__pycache__/
+*.pyc
+tools/logs/

@@ -2,13 +2,13 @@
 #include "key.h"
 #include "adc.h"
 
-int key_0=0;
-int key_1=0;
-int key_2=0;
+int key_0_pending=0;
+int key_1_pending=0;
+int key_2_pending=0;
 
-static uint32_t key_0_time=0;
-static uint32_t key_1_time=0;
-static uint32_t key_2_time=0;
+static uint32_t key_0_last_time=0;
+static uint32_t key_1_last_time=0;
+static uint32_t key_2_last_time=0;
 
 #define DEBOUNCE_TIME 50
 
@@ -17,39 +17,39 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     switch(GPIO_Pin)
     {
         case GPIO_PIN_13:
-            key_0=1;
+            key_0_pending=1;
             break;
         case GPIO_PIN_14:
-            key_1=1;
+            key_1_pending=1;
             break;
         case GPIO_PIN_15:
-            key_2=1;
+            key_2_pending=1;
             break;
         default:
             break;
     }
 }
 
-int Key_Press(int key)
+int Key_Press(int key_id)
 {
     uint32_t current_time = HAL_GetTick();
 
-    if(key==0 && key_0==1 && (current_time - key_0_time > DEBOUNCE_TIME))
+    if(key_id==0 && key_0_pending==1 && (current_time - key_0_last_time > DEBOUNCE_TIME))
     {
-        key_0=0;
-        key_0_time = current_time;
+        key_0_pending=0;
+        key_0_last_time = current_time;
         return 1;
     }
-    else if(key==1 && key_1==1 && (current_time - key_1_time > DEBOUNCE_TIME))
+    else if(key_id==1 && key_1_pending==1 && (current_time - key_1_last_time > DEBOUNCE_TIME))
     {
-        key_1=0;
-        key_1_time = current_time;
+        key_1_pending=0;
+        key_1_last_time = current_time;
         return 1;
     }
-    else if(key==2 && key_2==1 && (current_time - key_2_time > DEBOUNCE_TIME))
+    else if(key_id==2 && key_2_pending==1 && (current_time - key_2_last_time > DEBOUNCE_TIME))
     {
-        key_2=0;
-        key_2_time = current_time;
+        key_2_pending=0;
+        key_2_last_time = current_time;
         return 1;
     }
     return 0;

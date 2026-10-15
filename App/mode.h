@@ -16,7 +16,7 @@
   *          case 4:  Mode_4();           break;
   *          default: mode = MODE_SELECT; break;
   *        }
-    *   3. 加新模式：改 menu.c 的 mode_names 加一项，把 MODE_MAX 改成新项数，
+    *   3. 加新模式：改 menu.c 的 menu_item_label 加一项，把 MODE_MAX 改成新项数，
   *      再在 mode.c 里照着 Mode_1 写一个 Mode_x 函数即可
   ******************************************************************************
   */
@@ -34,7 +34,7 @@ extern "C" {
  * 模式编号
  * ========================================================================== */
 #define MODE_SELECT     0       /* 模式 0：模式选择（默认） */
-#define MODE_MAX        5       /* 模式总数，与 menu.c 的 mode_names 项数保持一致 */
+#define MODE_MAX        5       /* 模式总数，与 menu.c 的 menu_item_label 项数保持一致 */
 
 /* 当前模式，在主循环里 switch 它 */
 extern int mode;

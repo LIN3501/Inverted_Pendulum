@@ -5,12 +5,12 @@
 #include "stm32f1xx_hal.h"
 
 // 声明外部变量
-extern int key_0;
-extern int key_1;
-extern int key_2;
+extern int key_0_pending;
+extern int key_1_pending;
+extern int key_2_pending;
 
 
-int Key_Press(int key);
+int Key_Press(int key_id);
 
 void Potentiometer_Init(ADC_HandleTypeDef *hadc);
 
