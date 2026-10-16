@@ -62,7 +62,7 @@ static void Mode_Page(const char *title)
     }
 
 /* 模式 1：每 50ms 刷新一次
- * 第二行 = PA2 的 ADC 采样原始值，第三行 = Angle_Tick() 换算出的角度
+ * 第二行 = PA2 的 ADC 采样原始值，第三行 = AngleSensor_GetAngle() 换算出的角度
  * "ADC:"/"Angle=" 是静态文字，跟标题一样只在换模式后画一次；
  * 每次刷新只重画数字：原来一次约 15 字符 ≈ 64ms，现在约 12 字符 ≈ 33ms */
 void Mode_1(void)
@@ -81,14 +81,14 @@ void Mode_1(void)
 
         OLED_ShowNum(40, 2, adc_dma_buf[0], 4, 16);          /* [0] = PA2 原始值 0~4095 */
 
-        sprintf(message, "%8.2f", Angle_Tick());     /* 定宽 8，从 x=48 起盖住旧值 */
+        sprintf(message, "%8.2f", AngleSensor_GetAngle());     /* 定宽 8，从 x=48 起盖住旧值 */
         OLED_ShowString(48, 4, (uint8_t *)message, 16);
     }
 }
 
 /* 模式 2：把角度传感器原始采样值通过 USART1 发给 VOFA+（FireWater 协议）
  * VOFA+ 里选 FireWater 模式，波特率 115200，数据源选串口
- * 每 20ms 发一帧（50Hz）：ch0 = PA2 角度传感器原始值 0~4095，ch1 = Angle_Tick() 角度值（°），ch2 = Encoder_GetSpeed() 编码器速度（脉冲/秒），ch3 = Encoder_GetCount() 编码器计数值，ch4/ch5 = 占位 0 */
+ * 每 20ms 发一帧（50Hz）：ch0 = PA2 角度传感器原始值 0~4095，ch1 = AngleSensor_GetAngle() 角度值（°），ch2 = Encoder_GetSpeed() 编码器速度（脉冲/秒），ch3 = Encoder_GetCount() 编码器计数值，ch4/ch5 = 占位 0 */
 void Mode_2(void)
 {
     Mode_Page("Mode 2");
@@ -98,7 +98,7 @@ void Mode_2(void)
         mode2_last_tick = HAL_GetTick();
 
         Encoder_Update(&hencoder);
-        Serial_SendFireWater((float)adc_dma_buf[0], Angle_Tick(), Encoder_GetSpeed(&hencoder), (float)Encoder_GetCount(&hencoder), 0.0f, 0.0f);
+        Serial_SendFireWater((float)adc_dma_buf[0], AngleSensor_GetAngle(), Encoder_GetSpeed(&hencoder), (float)Encoder_GetCount(&hencoder), 0.0f, 0.0f);
     }
 }
 
@@ -186,7 +186,7 @@ void Mode_4(void)
         PIDController_Init(&pid_balance);
         PIDController_Init(&pid_velocity);
         /* 微分作用于测量值，预置当前角度，避免第一拍微分满幅尖峰 */
-        pid_balance.prevMeasurement = Angle_Tick();
+        pid_balance.prevMeasurement = AngleSensor_GetAngle();
         Motor_Enable();
         mode4_last_tick = HAL_GetTick();
 
@@ -253,7 +253,7 @@ static struct {
 /* Mode 5 的 100Hz 控制节拍，从 HAL_TIM_PeriodElapsedCallback 里调 */
 static void Mode5_ControlISR(void)
 {
-    float angle = Angle_Tick();                     /* (−180,180]，0=倒立 */
+    float angle = AngleSensor_GetAngle();                     /* (−180,180]，0=倒立 */
 
     float d = angle - s5_priv.prev_raw;             /* 跨 ±180° 缝时差值冒 ±360，拉回来 */
     if (d > 180.0f)       d -= 360.0f;
@@ -306,7 +306,7 @@ void Mode_5(void)
     if (screen_mode != mode)                /* 刚进模式：状态机复位，从甩摆开始 */
     {
         s5.state         = S5_SWING;
-        s5_priv.prev_raw = Angle_Tick();
+        s5_priv.prev_raw = AngleSensor_GetAngle();
         s5.vel           = 0.0f;
         s5.first_ms      = 0;
         s5.t0            = HAL_GetTick();   /* 踹脚计时和成绩计时都从这里起 */
@@ -375,7 +375,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         return;
     }
 
-    float angle = Angle_Tick();                             /* 单位 ° */
+    float angle = AngleSensor_GetAngle();                             /* 单位 ° */
 
     /* 速度外环：摆臂速度 -> 角度设定偏移（°），把速度压到 0 防止单方向漂移 */
     Encoder_Update(&hencoder);
